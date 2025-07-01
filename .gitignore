@@ -6,3 +6,4 @@
 *.pcap
 *.pth
 *.safetensors
+*.parquet
