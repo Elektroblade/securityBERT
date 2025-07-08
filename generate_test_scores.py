@@ -289,7 +289,7 @@ class GenerateTestScores():
         axs = axs.flatten()
 
         # Titles for subplots
-        pretrain_title = model_names[4] + " Pre-training"
+        pretrain_title = model_names[2] + " Pre-training"
 
         titles = [
             "EdgeIIoT - Loss",                 # subplot 0
