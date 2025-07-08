@@ -658,7 +658,7 @@ class GenerateTestScores():
         else:
             label_col = "Label"
             tokenizer_file_name = f'./securityBERT/tokenizer_CICIDS2017_0.02samples'
-            data_figure_title = "Downsampled CIC-IDS2017 0.02samples"
+            data_figure_title = "Downsampled CIC-IDS2017 2% Samples"
             data_figure_file_name = "./figures/cicids2017-0.02samples"
             
         data_order = data[label_col].value_counts().index
