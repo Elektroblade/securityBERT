@@ -7,3 +7,4 @@
 *.pth
 *.safetensors
 *.parquet
+*.pkl

@@ -40,6 +40,11 @@ class DatasetType(Enum):
     EDGEIIOT = "edgeiiot"
     CICIDS2017 = "cicids2017"
 
+class ValueType(Enum):
+    PPFLE = "ppfle"
+    FLAT = "flat"
+    P_INT = "p_int"
+
 class CustomDataset(Dataset):
   def __init__(self,df,tokenizer,max_len):
     self.df = df
@@ -87,6 +92,18 @@ class SecurityBERT(nn.Module):
     output = self.dropout(pooled_output)
 
     return self.out(output)
+  
+class LSTMClassifier(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(LSTMClassifier, self).__init__()
+        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, output_dim)
+    
+    def forward(self, x):
+        lstm_out, _ = self.lstm(x)
+        # Use the last hidden state
+        out = self.fc(lstm_out[:, -1, :])
+        return out
 
 class GenerateTestScores():
 
@@ -648,8 +665,35 @@ class GenerateTestScores():
         )
 
         return test_metrics, figure_version, history
+    
+    def hex_to_byte_array(hex_str):
+        if not isinstance(hex_str, str):
+            # Handle NaNs or non-strings gracefully
+            print(f"{hex_str} not instance of str")
+            return []
+        # Remove 0x prefix if present
+        hex_str = hex_str.strip().lower()
+        if hex_str.startswith('0x'):
+            hex_str = hex_str[2:]
+        # Remove any whitespace
+        hex_str = hex_str.replace(' ', '')
+        # If empty after cleaning, return empty list
+        if len(hex_str) == 0:
+            print("length is 0")
+            return []
+        # If odd length, pad with leading zero
+        if len(hex_str) % 2 != 0:
+            hex_str = '0' + hex_str
+        # Validate characters are hex digits
+        if any(c not in '0123456789abcdef' for c in hex_str):
+            # Handle invalid characters by returning empty or raise custom error
+            print(f"{hex_str} not all in 0123456789abcdef")
+            return []
+        # Convert hex string to byte list
+        byte_array = bytes.fromhex(hex_str)
+        return list(byte_array)
 
-    def generate_test_split(data: pd.DataFrame, dataset_type: DatasetType):
+    def generate_test_split(data: pd.DataFrame, dataset_type: DatasetType, value_type: ValueType):
         if (dataset_type == DatasetType.EDGEIIOT):
             label_col = "Attack_type"
             tokenizer_file_name = f"./securityBERT/tokenizer"
@@ -660,58 +704,81 @@ class GenerateTestScores():
             tokenizer_file_name = f'./securityBERT/tokenizer_CICIDS2017_0.02samples'
             data_figure_title = "Downsampled CIC-IDS2017 2% Samples"
             data_figure_file_name = "./figures/cicids2017-0.02samples"
-            
-        data_order = data[label_col].value_counts().index
-        sns.countplot(data,x=label_col, order=data_order)
-        plt.xticks(rotation=90)
-        plt.title(f"{data_figure_title} Population by Class")
-        plt.savefig(f'{data_figure_file_name}-full-data-distribution.png',bbox_inches="tight",dpi=780)
-        plt.clf()
-
-        le = LabelEncoder()
-        data['target'] = le.fit_transform(data[label_col])
-
+        
         train_ratio = 0.7
         val_ratio = 0.15
         test_ratio = 0.15
 
-        train_set, test_set = train_test_split(data, test_size=test_ratio,stratify=data.iloc[:,-1], random_state=42)
-        train_set, val_set = train_test_split(train_set, test_size=val_ratio/(val_ratio+train_ratio),stratify=train_set.iloc[:,-1], random_state=42)
+        if (value_type != ValueType.P_INT):
+            data_order = data[label_col].value_counts().index
+            sns.countplot(data,x=label_col, order=data_order)
+            plt.xticks(rotation=90)
+            plt.title(f"{data_figure_title} Population by Class")
+            plt.savefig(f'{data_figure_file_name}-full-data-distribution.png',bbox_inches="tight",dpi=780)
+            plt.clf()
 
-        train_order = train_set[label_col].value_counts().index
-        sns.countplot(train_set,x=label_col, order=train_order)
-        plt.xticks(rotation=90)
-        plt.title(f"{data_figure_title} Training Data Distribution")
-        plt.savefig(f'{data_figure_file_name}-train-data-distribution.png',bbox_inches="tight",dpi=780)
-        plt.clf()
-    
-        val_order = val_set[label_col].value_counts().index
-        sns.countplot(val_set,x=label_col, order=val_order)
-        plt.xticks(rotation=90)
-        plt.title(f"{data_figure_title} Validation Data Distribution")
-        plt.savefig(f'{data_figure_file_name}-val-data-distribution.png',bbox_inches="tight",dpi=780)
-        plt.clf()
-    
-        test_order = test_set[label_col].value_counts().index
-        sns.countplot(test_set,x=label_col, order=test_order)
-        plt.xticks(rotation=90)
-        plt.title(f"{data_figure_title} Testing Data Distribution")
-        plt.savefig(f'{data_figure_file_name}-test-data-distribution.png',bbox_inches="tight",dpi=780)
-        plt.clf()
-    
-        TARGET_LIST = le.classes_
+            le = LabelEncoder()
+            data['target'] = le.fit_transform(data[label_col])
 
-        tokenizer = RobertaTokenizer.from_pretrained(tokenizer_file_name)
-        MAX_LEN=512
-        BATCH_SIZE=32
+            train_set, test_set = train_test_split(data, test_size=test_ratio,stratify=data.iloc[:,-1], random_state=42)
+            train_set, val_set = train_test_split(train_set, test_size=val_ratio/(val_ratio+train_ratio),stratify=train_set.iloc[:,-1], random_state=42)
 
-        test_dataset = CustomDataset(test_set,tokenizer=tokenizer,max_len=MAX_LEN)
-        test_loader = DataLoader(
-            test_dataset,
-            shuffle=False,
-            batch_size=BATCH_SIZE,
-            num_workers=0
-        )
+            train_order = train_set[label_col].value_counts().index
+            sns.countplot(train_set,x=label_col, order=train_order)
+            plt.xticks(rotation=90)
+            plt.title(f"{data_figure_title} Training Data Distribution")
+            plt.savefig(f'{data_figure_file_name}-train-data-distribution.png',bbox_inches="tight",dpi=780)
+            plt.clf()
+        
+            val_order = val_set[label_col].value_counts().index
+            sns.countplot(val_set,x=label_col, order=val_order)
+            plt.xticks(rotation=90)
+            plt.title(f"{data_figure_title} Validation Data Distribution")
+            plt.savefig(f'{data_figure_file_name}-val-data-distribution.png',bbox_inches="tight",dpi=780)
+            plt.clf()
+        
+            test_order = test_set[label_col].value_counts().index
+            sns.countplot(test_set,x=label_col, order=test_order)
+            plt.xticks(rotation=90)
+            plt.title(f"{data_figure_title} Testing Data Distribution")
+            plt.savefig(f'{data_figure_file_name}-test-data-distribution.png',bbox_inches="tight",dpi=780)
+            plt.clf()
+        
+            TARGET_LIST = le.classes_
+
+            tokenizer = RobertaTokenizer.from_pretrained(tokenizer_file_name)
+            MAX_LEN=512
+            BATCH_SIZE=32
+
+            test_dataset = CustomDataset(test_set,tokenizer=tokenizer,max_len=MAX_LEN)
+            test_loader = DataLoader(
+                test_dataset,
+                shuffle=False,
+                batch_size=BATCH_SIZE,
+                num_workers=0
+            )
+        
+        else:
+            le = LabelEncoder()
+            data['target'] = le.fit_transform(data[label_col])
+            data = data.drop(columns=['Attack_type'])
+            
+            feature_cols = data.drop(columns='target').columns
+            byte_matrix_df = data[feature_cols].applymap(GenerateTestScores.hex_to_byte_array)
+            X = byte_matrix_df.apply(lambda row: sum(row, []), axis=1).to_list()
+            X = np.array(X)
+            y = data['target'].values
+
+            X_temp, X_test, y_temp, y_test = train_test_split(
+                X, y,
+                test_size=test_ratio,
+                stratify=y,
+                random_state=42
+            )
+
+            TARGET_LIST = le.classes_
+
+
 
         return test_set, test_loader, TARGET_LIST, le
     
@@ -743,20 +810,36 @@ def main():
 
     encoded_data_file_edgeiiot = "./securityBERT/saved_data/encoded_data"
     encoded_data_file_cicids2017 = "./securityBERT/saved_data/encoded_data_CICIDS2017_0.02samples"
-    test_set_edgeiiot, test_loader_edgeiiot, target_list_edgeiiot, le_edgeiiot = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT)
-    test_set_cicids2017, test_loader_cicids2017, target_list_cicids2017, le_cicids2017 = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_cicids2017}.pck'), DatasetType.CICIDS2017)
+    raw_data_file_edgeiiot = "./securityBERT/saved_data/raw_data"
+    raw_data_file_cicids2017 = "./securityBERT/saved_data/raw_data_CICIDS2017_0.02samples"
+    encoded_baseline_data_file_edgeiiot = "./securityBERT/saved_data/encoded_baseline_data"
+    encoded_baseline_data_file_cicids2017 = "./securityBERT/saved_data/encoded_baseline_data_CICIDS2017_0.02samples"
+    test_set_edgeiiot_ppfle, test_loader_edgeiiot_ppfle, target_list_edgeiiot_ppfle, le_edgeiiot_ppfle = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.PPFLE)
+    test_set_cicids2017_ppfle, test_loader_cicids2017_ppfle, target_list_cicids2017_ppfle, le_cicids2017_ppfle = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.PPFLE)
+    test_set_edgeiiot_flat, test_loader_edgeiiot_flat, target_list_edgeiiot_flat, le_edgeiiot_flat = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.FLAT)
+    test_set_cicids2017_flat, test_loader_cicids2017_flat, target_list_cicids2017_flat, le_cicids2017_flat = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.FLAT)
+    test_set_edgeiiot_int, test_loader_edgeiiot_int, target_list_edgeiiot_int, le_edgeiiot_int = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.P_INT)
+    test_set_cicids2017_int, test_loader_cicids2017_int, target_list_cicids2017_int, le_cicids2017_int = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.P_INT)
 
     models_to_score_edgeiiot = [
-        ("securityBERT/saved_model/", "securityBert3", 3, 1.0, "PPFLE-BERT (Adjh)", 'edgeiiot-ppfle-orig', test_set_edgeiiot, test_loader_edgeiiot, target_list_edgeiiot, DatasetType.EDGEIIOT, le_edgeiiot),
-        ("securityBERT/saved_model/", "securityBert3_mod", 3, 1.0, "PPFLE-BERT (Mine)", 'edgeiiot-ppfle-mod', test_set_edgeiiot, test_loader_edgeiiot, target_list_edgeiiot, DatasetType.EDGEIIOT, le_edgeiiot),
-        ("securityBERT/finetuned_model/", "bertFinetuned_securityBert4_mod_1.0samples", 3, 1.0, "PPFLE-BERT-SEM", 'edgeiiot-ppfle-sem', test_set_edgeiiot, test_loader_edgeiiot, target_list_edgeiiot, DatasetType.EDGEIIOT, le_edgeiiot),
+        ("securityBERT/saved_model/", "securityBert3_mod_raw", 3, 1.0, "FLAT-BERT", 'edgeiiot-flat-mod', test_set_edgeiiot_flat, test_loader_edgeiiot_flat, target_list_edgeiiot_flat, DatasetType.EDGEIIOT, le_edgeiiot_flat),
+        ("securityBERT/finetuned_model/", "bertFinetuned_securityBert4_mod_raw_1.0samples", 3, 1.0, "FLAT-BERT-SEM", 'edgeiiot-flat-sem', test_set_edgeiiot_flat, test_loader_edgeiiot_flat, target_list_edgeiiot_flat, DatasetType.EDGEIIOT, le_edgeiiot_flat),
+        ("securityBERT/saved_model/", "securityBert3", 3, 1.0, "PPFLE-BERT (Adjh)", 'edgeiiot-ppfle-orig', test_set_edgeiiot_ppfle, test_loader_edgeiiot_ppfle, target_list_edgeiiot_ppfle, DatasetType.EDGEIIOT, le_edgeiiot_ppfle),
+        ("securityBERT/saved_model/", "securityBert3_mod", 3, 1.0, "PPFLE-BERT (Mine)", 'edgeiiot-ppfle-mod', test_set_edgeiiot_ppfle, test_loader_edgeiiot_ppfle, target_list_edgeiiot_ppfle, DatasetType.EDGEIIOT, le_edgeiiot_ppfle),
+        ("securityBERT/finetuned_model/", "bertFinetuned_securityBert4_mod_1.0samples", 3, 1.0, "PPFLE-BERT-SEM", 'edgeiiot-ppfle-sem', test_set_edgeiiot_ppfle, test_loader_edgeiiot_ppfle, target_list_edgeiiot_ppfle, DatasetType.EDGEIIOT, le_edgeiiot_ppfle),
     ]
     
     test_metrics_list_edgeiiot, test_metrics_row_labels_edgeiiot, histories = GenerateTestScores.collect_test_results_helper(models_to_score_edgeiiot)
     models_to_score_cicids2017 = [
-        ("securityBERT/saved_model/", "securityBERT3_mod_CICIDS2017_0.02samples", 3, 0.02, "PPFLE-BERT 2% Samples", 'cicids2017-ppfle-0.02samples', test_set_cicids2017, test_loader_cicids2017, target_list_cicids2017, DatasetType.CICIDS2017, le_cicids2017),
-        ("securityBERT/finetuned_model/", "bertFinetuned_securityBERT4_mod_CICIDS2017_0.02samples", 3, 0.02, "PPFLE-BERT-SEM 2% Samples", 'cicids2017-ppfle-sem-0.02samples', test_set_cicids2017, test_loader_cicids2017, target_list_cicids2017, DatasetType.CICIDS2017, le_cicids2017),
-        ("languageClass/languageClass/pretrained_model/", "tabTransformer_cicids2017_0.02samples", 3, 0.02, "TabTransformer 2% Samples", 'cicids2017-tabtransformer-0.02samples', test_set_cicids2017, test_loader_cicids2017, target_list_cicids2017, DatasetType.CICIDS2017, le_cicids2017),
+        ("securityBERT/baseline_model/", "baseline_DT_CICIDS2017_PPFLE", 3, 0.02, "DT 2% Samples", 'cicids2017-ppfle-dt-0.02samples', test_set_cicids2017_int, test_loader_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
+        ("securityBERT/baseline_model/", "baseline_RF_CICIDS2017_PPFLE", 3, 0.02, "RF 2% Samples", 'cicids2017-ppfle-rf-0.02samples', test_set_cicids2017_int, test_loader_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
+        ("securityBERT/baseline_model/", "baseline_KNN_CICIDS2017_PPFLE", 3, 0.02, "KNN 2% Samples", 'cicids2017-ppfle-knn-0.02samples', test_set_cicids2017_int, test_loader_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int)
+        ("securityBERT/baseline_model/", "baseline_LSTM_CICIDS2017_PPFLE", 3, 0.02, "LSTM 2% Samples", 'cicids2017-ppfle-lstm-0.02samples', test_set_cicids2017_int, test_loader_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int)
+        ("securityBERT/saved_model/", "securityBERT3_mod_raw_CICIDS2017_0.02samples", 3, 0.02, "FLAT-BERT 2% Samples", 'cicids2017-flat-0.02samples', test_set_cicids2017_flat, test_loader_cicids2017_flat, target_list_cicids2017_flat, DatasetType.CICIDS2017, le_cicids2017_flat),
+        ("securityBERT/finetuned_model/", "bertFinetuned_securityBERT4_mod_raw_CICIDS2017_0.02samples", 3, 0.02, "FLAT-BERT-SEM 2% Samples", 'cicids2017-flat-sem-0.02samples', test_set_cicids2017_flat, test_loader_cicids2017_flat, target_list_cicids2017_flat, DatasetType.CICIDS2017, le_cicids2017_flat),
+        ("securityBERT/saved_model/", "securityBERT3_mod_CICIDS2017_0.02samples", 3, 0.02, "PPFLE-BERT 2% Samples", 'cicids2017-ppfle-0.02samples', test_set_cicids2017_ppfle, test_loader_cicids2017_ppfle, target_list_cicids2017_ppfle, DatasetType.CICIDS2017, le_cicids2017_ppfle),
+        ("securityBERT/finetuned_model/", "bertFinetuned_securityBERT4_mod_CICIDS2017_0.02samples", 3, 0.02, "PPFLE-BERT-SEM 2% Samples", 'cicids2017-ppfle-sem-0.02samples', test_set_cicids2017_ppfle, test_loader_cicids2017_ppfle, target_list_cicids2017_ppfle, DatasetType.CICIDS2017, le_cicids2017_ppfle),
+        ("languageClass/languageClass/pretrained_model/", "tabTransformer_cicids2017_0.02samples", 3, 0.02, "TabTransformer 2% Samples", 'cicids2017-tabtransformer-0.02samples', test_set_cicids2017_int, test_loader_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
     ]
     test_metrics_list_cicids2017, test_metrics_row_labels_cicids2017, cicids2017_histories = GenerateTestScores.collect_test_results_helper(models_to_score_cicids2017)
     
