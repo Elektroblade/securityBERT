@@ -1,38 +1,63 @@
-from sklearn.metrics import confusion_matrix,classification_report
 from enum import Enum
-import pandas as pd
-import numpy as np
-import matplotlib
-import matplotlib.pyplot as plt
-matplotlib.use('Agg')  # for headless environments (e.g., saving figures)
+import os
+import time
+import gc
+import random
 import warnings
 import hashlib
-from tqdm.notebook import tqdm
-import os
-warnings.filterwarnings('ignore')
+from copy import deepcopy
+import pandas as pd
+import numpy as np
 import psutil
+import matplotlib
+matplotlib.use('Agg')  # for headless environments (e.g., saving figures)
+import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.preprocessing import LabelEncoder
-from transformers import RobertaTokenizer,AutoTokenizer,AutoConfig,BertForPreTraining,AutoModel,BertModel
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset,DataLoader,TensorDataset
-import torch.nn.functional as F
-from transformers import get_linear_schedule_with_warmup
+import joblib
 from collections import defaultdict
+
+# TQDM
+from tqdm.notebook import tqdm  # Or replace with `from tqdm import tqdm` if not using notebook
+from tqdm import trange
+
+# Scikit-learn
 from sklearn.model_selection import train_test_split
-import random
-from torch.optim import AdamW
-import time
-from sklearn.preprocessing import label_binarize
+from sklearn.preprocessing import LabelEncoder, StandardScaler, label_binarize
 from sklearn.metrics import (
+    confusion_matrix,
+    classification_report,
     accuracy_score,
     precision_score,
     recall_score,
     f1_score,
     roc_auc_score,
+    log_loss
 )
-from copy import deepcopy
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+
+# Transformers / Hugging Face
+from transformers import (
+    RobertaTokenizer,
+    AutoTokenizer,
+    AutoConfig,
+    AutoModel,
+    BertForPreTraining,
+    BertModel,
+    get_linear_schedule_with_warmup
+)
+
+# PyTorch
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader, TensorDataset
+from torch.optim import AdamW
+
+# Filter warnings
+warnings.filterwarnings('ignore')
 
 device = torch.device("cuda" if torch.cuda.is_available() else 'cpu')
 
@@ -46,11 +71,16 @@ class ValueType(Enum):
     P_INT = "p_int"
 
 class CustomDataset(Dataset):
-  def __init__(self,df,tokenizer,max_len):
+  def __init__(self, df, tokenizer, max_len, value_type=ValueType):
     self.df = df
     self.tokenizer = tokenizer
-    self.max_len=max_len
-    self.sequence = self.df['encoded_PPFLE'].tolist()
+    self.max_len = max_len
+
+    if value_type == ValueType.PPFLE:
+        self.sequence = self.df['encoded_PPFLE'].tolist()
+    else:
+        self.sequence = self.df['raw_input'].tolist()
+
     self.targets = self.df['target'].tolist()
 
   def __len__(self):
@@ -106,6 +136,93 @@ class LSTMClassifier(nn.Module):
         return out
 
 class GenerateTestScores():
+
+    def save_scaler(model_directory, X_train, y_train, X_val, y_val, dataset_type = DatasetType):
+        file_name = "_EDGEIIOT"
+        if (dataset_type == DatasetType.CICIDS2017):
+            file_name = "_CICIDS2017"
+
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_val_scaled = scaler.transform(X_val)
+
+        # Save the scaler to a file
+        joblib.dump(scaler, f'./{model_directory}scaler{file_name}.joblib')
+
+    def get_predictions_ml(model, X_test, y_test):
+        predictions = []
+        predictions_probs = []
+        real_values = []
+        total_time = 0.0
+        total_samples = len(X_test)
+
+        for i in tqdm(range(total_samples), desc="Predictions"):
+            x = X_test[i].reshape(1, -1)  # Reshape single sample
+            y = y_test[i]
+
+            start_time = time.perf_counter()
+
+            # Predict class and probability
+            pred = model.predict(x)[0]
+            prob = model.predict_proba(x)[0]
+
+            end_time = time.perf_counter()
+            total_time += (end_time - start_time)
+
+            predictions.append(pred)
+            predictions_probs.append(prob)
+            real_values.append(y)
+
+        predictions = np.array(predictions)
+        predictions_probs = np.array(predictions_probs)
+        real_values = np.array(real_values)
+
+        # Calculate average inference time per sample in milliseconds
+        avg_inference_time_ms = (total_time / total_samples) * 1000
+
+        print(f"Average per-sample inference time: {avg_inference_time_ms:.4f} ms")
+
+        return predictions, predictions_probs, real_values, avg_inference_time_ms
+    
+    def get_predictions_dl(model, test_loader):
+        model.eval()
+
+        predictions, predictions_probs, real_values = [], [], []
+        total_time = 0.0
+        total_samples = 0
+
+        with torch.no_grad():
+            for batch in tqdm(test_loader, desc="Predictions"):
+                inputs = batch[0].to(device)
+                targets = batch[1].to(device)
+
+                start_time = time.perf_counter()
+
+                outputs = model(inputs)                     # Forward pass
+                                                            # Should output logits: (batch_size, num_classes)
+
+                end_time = time.perf_counter()
+
+                # Tracking time and sample count
+                batch_size = inputs.size(0)
+                total_samples += batch_size
+                total_time += (end_time - start_time)
+
+                probs = F.softmax(outputs, dim=1)           # Get class probabilities
+                _, preds = torch.max(probs, dim=1)          # Predicted class labels
+
+                predictions.extend(preds.cpu())
+                predictions_probs.extend(probs.cpu())
+                real_values.extend(targets.cpu())
+
+        predictions = torch.stack(predictions)
+        predictions_probs = torch.stack(predictions_probs)
+        real_values = torch.stack(real_values)
+
+        avg_inference_time_ms = (total_time / total_samples) * 1000
+        print(f"Average per-sample inference time: {avg_inference_time_ms:.4f} ms")
+
+        return predictions, predictions_probs, real_values, avg_inference_time_ms
 
     def plot_test_metrics_table(test_metrics, figure_version, num_epochs, figure_file_name):
         """
@@ -356,8 +473,8 @@ class GenerateTestScores():
                     tr_vals = hist['train_acc']
                     val_vals = hist['val_acc']
 
-                tr_line, = ax.plot(tr_vals, '-', color=color, label=f"{base_label} (train)")
-                val_line, = ax.plot(val_vals, '--', color=color, label=f"{base_label} (val)")
+                tr_line, = ax.plot(tr_vals, '-', color=color, label=f"{base_label} (train)", x=range(1, 3))
+                val_line, = ax.plot(val_vals, '--', color=color, label=f"{base_label} (val)", x=range(1, 3))
 
                 handles.extend([tr_line, val_line])
                 labels.extend([f"{base_label} (train)", f"{base_label} (val)"])
@@ -453,8 +570,8 @@ class GenerateTestScores():
         keep_frac: float,
         figure_version: str,
         figure_file_name: str,
-        test_set: pd.DataFrame,
-        test_loader: DataLoader,
+        test_set,
+        test_loader,
         TARGET_LIST: list,
         dataset_type: DatasetType,
         le: LabelEncoder,
@@ -479,7 +596,7 @@ class GenerateTestScores():
         for key, value in sample_values.items():
             print(f"{key}: {value}")
 
-        epochs = range(1, num_epochs+1)
+        epochs = range(1, 3+1)
         train_losses = history['train_loss']
         val_losses = history['val_loss']
 
@@ -499,9 +616,6 @@ class GenerateTestScores():
         plt.clf()
         # Affichage du graphique
         
-
-
-        epochs = range(1, num_epochs+1)
         if isinstance(history["train_acc"][0], float):
             train_accuracies = [float_ for float_ in history['train_acc']]
             val_accuracies = [float_ for float_ in history['val_acc']]
@@ -525,7 +639,6 @@ class GenerateTestScores():
         plt.clf()
         # Affichage du graphique
         
-
         y_pred_path = os.path.join(model_directory, f"y_pred_{model_version}.pt")
         y_proba_path = os.path.join(model_directory, f"y_proba_{model_version}.pt")
         real_values_path = os.path.join(model_directory, f"real_values_{model_version}.pt")
@@ -536,26 +649,80 @@ class GenerateTestScores():
         real_values = GenerateTestScores.safe_load_tensor(real_values_path)
         inference_time = GenerateTestScores.safe_load_tensor(inference_time_path)
 
-        if (y_pred == None or y_proba == None or real_values == None or inference_time == None):
-            config = AutoConfig.from_pretrained("bert-base-uncased")
-            config.hidden_size = 256
-            config.num_hidden_layers = 4
-            config.num_attention_heads = 16
-            config.intermediate_size = 512
-            config.vocab_size=VOCAB_SIZE
-
-            finetunedBERT = AutoModel.from_config(config)
-
+        if ((y_pred is None) or (y_proba is None) or (real_values is None) or (inference_time is None)):
             checkpoint_path = f"./{model_directory}{model_version}_{num_epochs}.0.pt"
-            securityBert = SecurityBERT(finetunedBERT=finetunedBERT,n_classes=len(TARGET_LIST)).to(device)
+            model_path = f"./{model_directory}{model_version}_{num_epochs}.0.pkl"
 
             if model_version.startswith("tabTransformer"):
                 # Do something
                 print("This is a tabTransformer model.")
+            elif model_version.startswith("baseline_LSTM"):
+                print("This is an LSTM model.")
+
+                input_dim = test_set.shape[1]
+                test_set = test_set.reshape((test_set.shape[0], 1, test_set.shape[1]))
+
+                test_dataset = TensorDataset(
+                    torch.tensor(test_set, dtype=torch.float32),
+                    torch.tensor(test_loader, dtype=torch.long)
+                )
+                batch_size=64
+                test_dataset_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+                hidden_dim=64
+                lr=0.001
+                num_classes = len(le.classes_)
+                lstm_cls = LSTMClassifier(input_dim, hidden_dim, num_classes).to(device)
+                lstm_cls.load_state_dict(torch.load(checkpoint_path, map_location=torch.device("cpu")))
+                try:
+                    lstm_cls.load_state_dict(torch.load(checkpoint_path, map_location=torch.device("cpu")))
+                    print(f"Model state_dict loaded successfully at \"{checkpoint_path}\"")
+                except FileNotFoundError:
+                    print(f"Checkpoint not found: \"{checkpoint_path}\"")
+                    return None
+                except Exception as e:
+                    print(f"Error loading model checkpoint: {e}")
+                    return None
+                y_pred,y_proba,real_values,inference_time = GenerateTestScores.get_predictions_dl(lstm_cls,test_dataset_loader)
+
+                torch.save(y_pred,f"./{model_directory}y_pred_{model_version}.pt")
+                torch.save(y_proba,f"./{model_directory}y_proba_{model_version}.pt")
+                torch.save(real_values,f"./{model_directory}real_values_{model_version}.pt")
+                torch.save(inference_time,f"./{model_directory}inference_time_{model_version}.pt")
+            elif model_version.startswith("baseline"):
+                print("This is a classical ML baseline model.")
+                model = None
+
+                try:
+                    model = joblib.load(model_path)
+                    print(f"Model state_dict loaded successfully at \"{model_path}\"")
+                except FileNotFoundError:
+                    print(f"Checkpoint not found: \"{checkpoint_path}\"")
+                    return None
+                except Exception as e:
+                    print(f"Error loading model checkpoint: {e}")
+                    return None
+                y_pred,y_proba,real_values,inference_time = GenerateTestScores.get_predictions_ml(model,test_set,test_loader)
+
+                torch.save(y_pred,f"./{model_directory}y_pred_{model_version}.pt")
+                torch.save(y_proba,f"./{model_directory}y_proba_{model_version}.pt")
+                torch.save(real_values,f"./{model_directory}real_values_{model_version}.pt")
+                torch.save(inference_time,f"./{model_directory}inference_time_{model_version}.pt")
+
             else:
+                config = AutoConfig.from_pretrained("bert-base-uncased")
+                config.hidden_size = 256
+                config.num_hidden_layers = 4
+                config.num_attention_heads = 16
+                config.intermediate_size = 512
+                config.vocab_size=VOCAB_SIZE
+
+                finetunedBERT = AutoModel.from_config(config)
+                securityBert = SecurityBERT(finetunedBERT=finetunedBERT,n_classes=len(TARGET_LIST)).to(device)
+
                 try:
                     securityBert.load_state_dict(torch.load(checkpoint_path, map_location=torch.device("cpu")))
-                    print("Model state_dict loaded successfully at \"checkpoint_path\"")
+                    print(f"Model state_dict loaded successfully at \"{checkpoint_path}\"")
                 except FileNotFoundError:
                     print(f"Checkpoint not found: \"{checkpoint_path}\"")
                     return None
@@ -590,14 +757,18 @@ class GenerateTestScores():
 
         print(actual_considered_classes)
 
-        counts = test_set['target'].value_counts().sort_index()
+        counts = None
+        if model_version.startswith("baseline"):
+            counts = pd.Series(test_loader).value_counts().sort_index()
+        else:
+            counts = test_set['target'].value_counts().sort_index()
         class_names = le.inverse_transform(counts.index)
         class_counts = pd.Series(counts.values, index=class_names)
         class_counts = class_counts.sort_values(ascending=False)  # or .sort_index()
         print(class_counts)
 
-        y_true = real_values.cpu().numpy()
-        y_score = y_pred.cpu().numpy()
+        y_true = real_values.cpu().numpy() if hasattr(real_values, 'cpu') else real_values
+        y_score = y_pred.cpu().numpy() if hasattr(y_pred, 'cpu') else y_pred
 
         n_classes = len(np.unique(y_true))
         y_true_bin = label_binarize(y_true, classes=np.arange(n_classes))
@@ -645,9 +816,9 @@ class GenerateTestScores():
         elif (GenerateTestScores.get_history_value(history, key = "training_time") != None and isinstance(history["training_time"], float)):
             finetune_time = history["training_time"] / 3600.0
         elif (GenerateTestScores.get_history_value(history, key = "total_time") != None and isinstance(history["total_time"], list) and len(history["total_time"]) > 0):
-            finetune_time = history["training_time"][0] / 3600.0
+            finetune_time = history["total_time"][0] / 3600.0
         elif (GenerateTestScores.get_history_value(history, key = "total_time") != None and isinstance(history["total_time"], float)):
-            finetune_time = history["training_time"] / 3600.0
+            finetune_time = history["total_time"] / 3600.0
 
         test_metrics["pretrain_time"] = pretrain_time
         test_metrics["finetune_time"] = finetune_time
@@ -699,11 +870,13 @@ class GenerateTestScores():
             tokenizer_file_name = f"./securityBERT/tokenizer"
             data_figure_title = "Edge-IIoT"
             data_figure_file_name = "./figures/edgeiiot"
+            scaler_name = "_EDGEIIOT"
         else:
             label_col = "Label"
             tokenizer_file_name = f'./securityBERT/tokenizer_CICIDS2017_0.02samples'
             data_figure_title = "Downsampled CIC-IDS2017 2% Samples"
             data_figure_file_name = "./figures/cicids2017-0.02samples"
+            scaler_name = "_CICIDS2017"
         
         train_ratio = 0.7
         val_ratio = 0.15
@@ -750,7 +923,7 @@ class GenerateTestScores():
             MAX_LEN=512
             BATCH_SIZE=32
 
-            test_dataset = CustomDataset(test_set,tokenizer=tokenizer,max_len=MAX_LEN)
+            test_dataset = CustomDataset(test_set,tokenizer=tokenizer,max_len=MAX_LEN,value_type=value_type)
             test_loader = DataLoader(
                 test_dataset,
                 shuffle=False,
@@ -761,7 +934,7 @@ class GenerateTestScores():
         else:
             le = LabelEncoder()
             data['target'] = le.fit_transform(data[label_col])
-            data = data.drop(columns=['Attack_type'])
+            data = data.drop(columns=[label_col])
             
             feature_cols = data.drop(columns='target').columns
             byte_matrix_df = data[feature_cols].applymap(GenerateTestScores.hex_to_byte_array)
@@ -776,9 +949,20 @@ class GenerateTestScores():
                 random_state=42
             )
 
+            X_train, X_val, y_train, y_val = train_test_split(
+                X_temp, y_temp,
+                test_size=val_ratio / (train_ratio + val_ratio),
+                stratify=y_temp,
+                random_state=42
+            )
+
+            GenerateTestScores.save_scaler('securityBERT/baseline_model/', X_train, y_train, X_val, y_val, dataset_type)
+            scaler = joblib.load(f'./securityBERT/baseline_model/scaler{scaler_name}.joblib')
+            X_test_scaled = scaler.transform(X_test)
+
             TARGET_LIST = le.classes_
 
-
+            return X_test_scaled, y_test, TARGET_LIST, le
 
         return test_set, test_loader, TARGET_LIST, le
     
@@ -815,13 +999,14 @@ def main():
     encoded_baseline_data_file_edgeiiot = "./securityBERT/saved_data/encoded_baseline_data"
     encoded_baseline_data_file_cicids2017 = "./securityBERT/saved_data/encoded_baseline_data_CICIDS2017_0.02samples"
     test_set_edgeiiot_ppfle, test_loader_edgeiiot_ppfle, target_list_edgeiiot_ppfle, le_edgeiiot_ppfle = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.PPFLE)
-    test_set_cicids2017_ppfle, test_loader_cicids2017_ppfle, target_list_cicids2017_ppfle, le_cicids2017_ppfle = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.PPFLE)
-    test_set_edgeiiot_flat, test_loader_edgeiiot_flat, target_list_edgeiiot_flat, le_edgeiiot_flat = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.FLAT)
-    test_set_cicids2017_flat, test_loader_cicids2017_flat, target_list_cicids2017_flat, le_cicids2017_flat = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.FLAT)
-    test_set_edgeiiot_int, test_loader_edgeiiot_int, target_list_edgeiiot_int, le_edgeiiot_int = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.P_INT)
-    test_set_cicids2017_int, test_loader_cicids2017_int, target_list_cicids2017_int, le_cicids2017_int = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.P_INT)
+    test_set_edgeiiot_flat, test_loader_edgeiiot_flat, target_list_edgeiiot_flat, le_edgeiiot_flat = GenerateTestScores.generate_test_split(pd.read_pickle(f'{raw_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.FLAT)
+    X_test_edgeiiot_int, y_test_edgeiiot_int, target_list_edgeiiot_int, le_edgeiiot_int = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_baseline_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.P_INT)
 
     models_to_score_edgeiiot = [
+        ("securityBERT/baseline_model/", "baseline_DT_PPFLE", 3, 1.0, "DT", 'edgeiiot-ppfle-dt', X_test_edgeiiot_int, y_test_edgeiiot_int, target_list_edgeiiot_int, DatasetType.EDGEIIOT, le_edgeiiot_int),
+        ("securityBERT/baseline_model/", "baseline_RF_PPFLE", 3, 1.0, "RF", 'edgeiiot-ppfle-rf', X_test_edgeiiot_int, y_test_edgeiiot_int, target_list_edgeiiot_int, DatasetType.EDGEIIOT, le_edgeiiot_int),
+        ("securityBERT/baseline_model/", "baseline_KNN_PPFLE", 1, 1.0, "KNN", 'edgeiiot-ppfle-knn', X_test_edgeiiot_int, y_test_edgeiiot_int, target_list_edgeiiot_int, DatasetType.EDGEIIOT, le_edgeiiot_int),
+        ("securityBERT/baseline_model/", "baseline_LSTM_PPFLE", 1, 1.0, "LSTM", 'edgeiiot-ppfle-lstm', X_test_edgeiiot_int, y_test_edgeiiot_int, target_list_edgeiiot_int, DatasetType.EDGEIIOT, le_edgeiiot_int),
         ("securityBERT/saved_model/", "securityBert3_mod_raw", 3, 1.0, "FLAT-BERT", 'edgeiiot-flat-mod', test_set_edgeiiot_flat, test_loader_edgeiiot_flat, target_list_edgeiiot_flat, DatasetType.EDGEIIOT, le_edgeiiot_flat),
         ("securityBERT/finetuned_model/", "bertFinetuned_securityBert4_mod_raw_1.0samples", 3, 1.0, "FLAT-BERT-SEM", 'edgeiiot-flat-sem', test_set_edgeiiot_flat, test_loader_edgeiiot_flat, target_list_edgeiiot_flat, DatasetType.EDGEIIOT, le_edgeiiot_flat),
         ("securityBERT/saved_model/", "securityBert3", 3, 1.0, "PPFLE-BERT (Adjh)", 'edgeiiot-ppfle-orig', test_set_edgeiiot_ppfle, test_loader_edgeiiot_ppfle, target_list_edgeiiot_ppfle, DatasetType.EDGEIIOT, le_edgeiiot_ppfle),
@@ -830,16 +1015,47 @@ def main():
     ]
     
     test_metrics_list_edgeiiot, test_metrics_row_labels_edgeiiot, histories = GenerateTestScores.collect_test_results_helper(models_to_score_edgeiiot)
+
+    # List of variables to delete
+    del_vars = [
+        'test_set_edgeiiot_ppfle',
+        'test_loader_edgeiiot_ppfle',
+        'target_list_edgeiiot_ppfle',
+        'le_edgeiiot_ppfle',
+        'test_set_edgeiiot_flat',
+        'test_loader_edgeiiot_flat',
+        'target_list_edgeiiot_flat',
+        'le_edgeiiot_flat',
+        'X_test_edgeiiot_int',
+        'y_test_edgeiiot_int',
+        'target_list_edgeiiot_int',
+        'le_edgeiiot_int',
+    ]
+
+    # Delete variables if they exist
+    for var in del_vars:
+        if var in globals():
+            del globals()[var]
+        elif var in locals():
+            del locals()[var]
+
+    # Force garbage collection
+    gc.collect()
+
+    test_set_cicids2017_ppfle, test_loader_cicids2017_ppfle, target_list_cicids2017_ppfle, le_cicids2017_ppfle = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.PPFLE)
+    test_set_cicids2017_flat, test_loader_cicids2017_flat, target_list_cicids2017_flat, le_cicids2017_flat = GenerateTestScores.generate_test_split(pd.read_pickle(f'{raw_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.FLAT)
+    X_test_cicids2017_int, y_test_cicids2017_int, target_list_cicids2017_int, le_cicids2017_int = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_baseline_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.P_INT)
+
     models_to_score_cicids2017 = [
-        ("securityBERT/baseline_model/", "baseline_DT_CICIDS2017_PPFLE", 3, 0.02, "DT 2% Samples", 'cicids2017-ppfle-dt-0.02samples', test_set_cicids2017_int, test_loader_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
-        ("securityBERT/baseline_model/", "baseline_RF_CICIDS2017_PPFLE", 3, 0.02, "RF 2% Samples", 'cicids2017-ppfle-rf-0.02samples', test_set_cicids2017_int, test_loader_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
-        ("securityBERT/baseline_model/", "baseline_KNN_CICIDS2017_PPFLE", 3, 0.02, "KNN 2% Samples", 'cicids2017-ppfle-knn-0.02samples', test_set_cicids2017_int, test_loader_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int)
-        ("securityBERT/baseline_model/", "baseline_LSTM_CICIDS2017_PPFLE", 3, 0.02, "LSTM 2% Samples", 'cicids2017-ppfle-lstm-0.02samples', test_set_cicids2017_int, test_loader_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int)
+        ("securityBERT/baseline_model/", "baseline_DT_CICIDS2017_PPFLE", 2, 0.02, "DT 2% Samples", 'cicids2017-ppfle-dt-0.02samples', X_test_cicids2017_int, y_test_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
+        ("securityBERT/baseline_model/", "baseline_RF_CICIDS2017_PPFLE", 3, 0.02, "RF 2% Samples", 'cicids2017-ppfle-rf-0.02samples', X_test_cicids2017_int, y_test_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
+        ("securityBERT/baseline_model/", "baseline_KNN_CICIDS2017_PPFLE", 1, 0.02, "KNN 2% Samples", 'cicids2017-ppfle-knn-0.02samples', X_test_cicids2017_int, y_test_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
+        ("securityBERT/baseline_model/", "baseline_LSTM_CICIDS2017_PPFLE", 3, 0.02, "LSTM 2% Samples", 'cicids2017-ppfle-lstm-0.02samples', X_test_cicids2017_int, y_test_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
         ("securityBERT/saved_model/", "securityBERT3_mod_raw_CICIDS2017_0.02samples", 3, 0.02, "FLAT-BERT 2% Samples", 'cicids2017-flat-0.02samples', test_set_cicids2017_flat, test_loader_cicids2017_flat, target_list_cicids2017_flat, DatasetType.CICIDS2017, le_cicids2017_flat),
         ("securityBERT/finetuned_model/", "bertFinetuned_securityBERT4_mod_raw_CICIDS2017_0.02samples", 3, 0.02, "FLAT-BERT-SEM 2% Samples", 'cicids2017-flat-sem-0.02samples', test_set_cicids2017_flat, test_loader_cicids2017_flat, target_list_cicids2017_flat, DatasetType.CICIDS2017, le_cicids2017_flat),
         ("securityBERT/saved_model/", "securityBERT3_mod_CICIDS2017_0.02samples", 3, 0.02, "PPFLE-BERT 2% Samples", 'cicids2017-ppfle-0.02samples', test_set_cicids2017_ppfle, test_loader_cicids2017_ppfle, target_list_cicids2017_ppfle, DatasetType.CICIDS2017, le_cicids2017_ppfle),
         ("securityBERT/finetuned_model/", "bertFinetuned_securityBERT4_mod_CICIDS2017_0.02samples", 3, 0.02, "PPFLE-BERT-SEM 2% Samples", 'cicids2017-ppfle-sem-0.02samples', test_set_cicids2017_ppfle, test_loader_cicids2017_ppfle, target_list_cicids2017_ppfle, DatasetType.CICIDS2017, le_cicids2017_ppfle),
-        ("languageClass/languageClass/pretrained_model/", "tabTransformer_cicids2017_0.02samples", 3, 0.02, "TabTransformer 2% Samples", 'cicids2017-tabtransformer-0.02samples', test_set_cicids2017_int, test_loader_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
+        ("languageClass/languageClass/pretrained_model/", "tabTransformer_cicids2017_0.02samples", 3, 0.02, "TabTransformer 2% Samples", 'cicids2017-tabtransformer-0.02samples', test_set_cicids2017_ppfle, test_loader_cicids2017_ppfle, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
     ]
     test_metrics_list_cicids2017, test_metrics_row_labels_cicids2017, cicids2017_histories = GenerateTestScores.collect_test_results_helper(models_to_score_cicids2017)
     
