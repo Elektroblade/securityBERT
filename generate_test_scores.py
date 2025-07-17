@@ -412,18 +412,19 @@ class GenerateTestScores():
         Returns:
         - None (displays the plot)
         """
-        assert len(histories) == 8, "Expected 8 history objects"
-        assert len(model_names) == 6, "Expected 6 model names"
+        assert len(histories) == 22, "Expected 22 history objects"
+        assert len(model_names) == 18, "Expected 18 model names"
 
         # Color palette: c1-c6
-        c1, c2, c3, c4, c5, c6 = 'tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown'
-        colors = [c1, c2, c3, c2, c3, c4, c5, c6]  # hist1–hist8
+        c1, c2, c3, c4, c5, c6, c7 = "crimson","darkorange","gold","limegreen","turquoise","dodgerblue","slateblue"
+        c8, c9, c10, c11, c12, c13, c14 = "indigo","orchid","deeppink","saddlebrown","dimgray","black","mediumseagreen"
+        colors = [c1, c2, c3, c4, c5, c6, c7, c8, c9, c1, c2, c3, c4, c5, c6, c8, c9, c10, c11, c12, c13, c14]  # hist1–hist8
 
         fig, axs = plt.subplots(3, 2, figsize=(14, 15))
         axs = axs.flatten()
 
         # Titles for subplots
-        pretrain_title = model_names[2] + " Pre-training"
+        pretrain_title = "Pre-training"
 
         titles = [
             "EdgeIIoT - Loss",                 # subplot 0
@@ -441,15 +442,15 @@ class GenerateTestScores():
 
             # Top row: EdgeIIoT (histories 0–2)
             if i in [0, 1]:
-                idxs = range(3)
+                idxs = range(9)
 
             # Bottom row: CIC-IDS2017 (histories 3–5)
             elif i in [4, 5]:
-                idxs = range(3, 6)
+                idxs = range(9, 18)
 
             # Middle row (new): hist7 + hist8
             elif i in [2, 3]:
-                idxs = [6, 7]  # both histories shown in same subplot
+                idxs = range(18, 22)  # both histories shown in same subplot
 
             handles, labels = [], []
 
@@ -458,10 +459,16 @@ class GenerateTestScores():
                 color = colors[j]
 
                 # Use dataset name for hist7/hist8
-                if j == 6:
-                    base_label = "EdgeIIoT"
-                elif j == 7:
-                    base_label = "CIC-IDS2017"
+                if j == 18 or j == 20:
+                    if j == 18:
+                        base_label = GenerateTestScores.latex_escape(model_names[5]) + " EdgeIIoT"
+                    else:
+                        base_label = GenerateTestScores.latex_escape(model_names[8]) + " EdgeIIoT"
+                elif j == 19 or j == 21:
+                    if j == 19:
+                        base_label = GenerateTestScores.latex_escape(model_names[5]) + " CIC-IDS2017"
+                    else:
+                        base_label = GenerateTestScores.latex_escape(model_names[8]) + " CIC-IDS2017"
                 else:
                     base_label = GenerateTestScores.latex_escape(model_names[j])
 
@@ -473,8 +480,8 @@ class GenerateTestScores():
                     tr_vals = hist['train_acc']
                     val_vals = hist['val_acc']
 
-                tr_line, = ax.plot(tr_vals, '-', color=color, label=f"{base_label} (train)", x=range(1, 3))
-                val_line, = ax.plot(val_vals, '--', color=color, label=f"{base_label} (val)", x=range(1, 3))
+                tr_line, = ax.plot(range(1, 4), tr_vals, '-', color=color, label=f"{base_label} (train)")
+                val_line, = ax.plot(range(1, 4), val_vals, '--', color=color, label=f"{base_label} (val)")
 
                 handles.extend([tr_line, val_line])
                 labels.extend([f"{base_label} (train)", f"{base_label} (val)"])
@@ -867,13 +874,19 @@ class GenerateTestScores():
     def generate_test_split(data: pd.DataFrame, dataset_type: DatasetType, value_type: ValueType):
         if (dataset_type == DatasetType.EDGEIIOT):
             label_col = "Attack_type"
-            tokenizer_file_name = f"./securityBERT/tokenizer"
+            if value_type == ValueType.PPFLE:
+                tokenizer_file_name = f"./securityBERT/tokenizer"
+            elif value_type == ValueType.FLAT:
+                tokenizer_file_name = f"./securityBERT/tokenizer_raw"
             data_figure_title = "Edge-IIoT"
             data_figure_file_name = "./figures/edgeiiot"
             scaler_name = "_EDGEIIOT"
         else:
             label_col = "Label"
-            tokenizer_file_name = f'./securityBERT/tokenizer_CICIDS2017_0.02samples'
+            if value_type == ValueType.PPFLE:
+                tokenizer_file_name = f'./securityBERT/tokenizer_CICIDS2017_0.02samples'
+            elif value_type == ValueType.FLAT:
+                tokenizer_file_name = f"./securityBERT/tokenizer_CICIDS2017_raw_0.02samples"
             data_figure_title = "Downsampled CIC-IDS2017 2% Samples"
             data_figure_file_name = "./figures/cicids2017-0.02samples"
             scaler_name = "_CICIDS2017"
@@ -1065,8 +1078,10 @@ def main():
     for tmp_history in cicids2017_histories:
         histories.append(tmp_history)
     
+    histories.append(GenerateTestScores.safe_load_tensor("./securityBERT/pretrained_model/history_bertPretrained_securityBERT4_mod_raw_1.0samples.pt"))
+    histories.append(GenerateTestScores.safe_load_tensor("./securityBERT/pretrained_model/history_bertPretrained_securityBERT4_mod_raw_CICIDS2017_0.02samples.pt"))
     histories.append(GenerateTestScores.safe_load_tensor("./securityBERT/pretrained_model/history_bertPretrained_securityBERT4_mod_1.0samples.pt"))
-    histories.append(GenerateTestScores.safe_load_tensor("./securityBERT/pretrained_model/history_bertPretrained_securityBERT4_CICIDS2017_0.02samples.pt"))
+    histories.append(GenerateTestScores.safe_load_tensor("./securityBERT/pretrained_model/history_bertPretrained_securityBERT4_mod_CICIDS2017_0.02samples.pt"))
 
     row_labels = deepcopy(test_metrics_row_labels_edgeiiot)
 
