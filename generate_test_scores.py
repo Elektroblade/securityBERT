@@ -398,7 +398,7 @@ class GenerateTestScores():
 
         plt.title(f"{figure_version} Test Metrics", fontsize=14, pad=20)
         output_path = f"./figures/{figure_file_name}-multi-test-scores.png"
-        plt.savefig(output_path, dpi=780, bbox_inches="tight")
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.clf()
 
     def plot_model_histories_extended(histories, model_names):
@@ -489,7 +489,7 @@ class GenerateTestScores():
             ax.legend(handles, labels, fontsize='small', ncol=1)
 
         plt.tight_layout()
-        plt.savefig(f'./figures/training-and-validation-loss-and-accuracy.png',dpi=780)
+        plt.savefig(f'./figures/training-and-validation-loss-and-accuracy.png',dpi=300)
         plt.clf()
 
 
@@ -501,7 +501,7 @@ class GenerateTestScores():
         plt.title(f"{figure_version} {num_epochs} Epochs Confusion Matrix")
         plt.ylabel('Real threats')
         plt.xlabel('Predicted threats')
-        plt.savefig(f'./figures/{figure_file_name}-{num_epochs}ep-confusion-matrix.png',bbox_inches="tight",dpi=780)
+        plt.savefig(f'./figures/{figure_file_name}-{num_epochs}ep-confusion-matrix.png',bbox_inches="tight",dpi=300)
         plt.clf()
 
     def get_predictions(model, test_loader):
@@ -619,7 +619,7 @@ class GenerateTestScores():
         plt.xlabel('Epochs')
         plt.ylabel('Loss')
         plt.legend()
-        plt.savefig(f'./figures/{figure_file_name}-{num_epochs}ep-training-validation-losses.png',dpi=780)
+        plt.savefig(f'./figures/{figure_file_name}-{num_epochs}ep-training-validation-losses.png',dpi=300)
         plt.clf()
         # Affichage du graphique
         
@@ -642,7 +642,7 @@ class GenerateTestScores():
         plt.xlabel('Epochs')
         plt.ylabel('Accuracy')
         plt.legend()
-        plt.savefig(f'./figures/{figure_file_name}-{num_epochs}ep-training-validation-accuracies.png',dpi=780)
+        plt.savefig(f'./figures/{figure_file_name}-{num_epochs}ep-training-validation-accuracies.png',dpi=300)
         plt.clf()
         # Affichage du graphique
         
@@ -900,7 +900,7 @@ class GenerateTestScores():
             sns.countplot(data,x=label_col, order=data_order)
             plt.xticks(rotation=90)
             plt.title(f"{data_figure_title} Population by Class")
-            plt.savefig(f'{data_figure_file_name}-full-data-distribution.png',bbox_inches="tight",dpi=780)
+            plt.savefig(f'{data_figure_file_name}-full-data-distribution.png',bbox_inches="tight",dpi=300)
             plt.clf()
 
             le = LabelEncoder()
@@ -913,21 +913,21 @@ class GenerateTestScores():
             sns.countplot(train_set,x=label_col, order=train_order)
             plt.xticks(rotation=90)
             plt.title(f"{data_figure_title} Training Data Distribution")
-            plt.savefig(f'{data_figure_file_name}-train-data-distribution.png',bbox_inches="tight",dpi=780)
+            plt.savefig(f'{data_figure_file_name}-train-data-distribution.png',bbox_inches="tight",dpi=300)
             plt.clf()
         
             val_order = val_set[label_col].value_counts().index
             sns.countplot(val_set,x=label_col, order=val_order)
             plt.xticks(rotation=90)
             plt.title(f"{data_figure_title} Validation Data Distribution")
-            plt.savefig(f'{data_figure_file_name}-val-data-distribution.png',bbox_inches="tight",dpi=780)
+            plt.savefig(f'{data_figure_file_name}-val-data-distribution.png',bbox_inches="tight",dpi=300)
             plt.clf()
         
             test_order = test_set[label_col].value_counts().index
             sns.countplot(test_set,x=label_col, order=test_order)
             plt.xticks(rotation=90)
             plt.title(f"{data_figure_title} Testing Data Distribution")
-            plt.savefig(f'{data_figure_file_name}-test-data-distribution.png',bbox_inches="tight",dpi=780)
+            plt.savefig(f'{data_figure_file_name}-test-data-distribution.png',bbox_inches="tight",dpi=300)
             plt.clf()
         
             TARGET_LIST = le.classes_
