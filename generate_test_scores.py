@@ -224,6 +224,53 @@ class GenerateTestScores():
 
         return predictions, predictions_probs, real_values, avg_inference_time_ms
 
+    def get_predictions_tt(model, X_test, y_test, device):
+        """
+        Vectorized prediction for TabTransformer.
+        
+        Args:
+            model: Trained TabularModel.
+            X_test: Test features (DataFrame or NumPy array).
+            y_test: True labels (array-like).
+            device: "cpu" or "cuda".
+            
+        Returns:
+            predictions: Tensor of predicted class labels.
+            predictions_probs: Tensor of predicted probabilities.
+            real_values: Tensor of true labels.
+            avg_inference_time_ms: Average inference time per sample in ms.
+        """
+
+        model.model.eval()
+
+        # Ensure DataFrame input
+        if isinstance(X_test, np.ndarray):
+            X_test = pd.DataFrame(X_test)
+        if isinstance(y_test, np.ndarray):
+            y_test = pd.Series(y_test)
+
+        test_df = X_test.copy()
+        test_df["target"] = y_test.reset_index(drop=True)
+
+        # Inference timing
+        start_time = time.perf_counter()
+        pred_df = model.predict(test_df, ret_logits=False)  # batch prediction
+        end_time = time.perf_counter()
+
+        # Extract probability columns
+        prob_cols = [col for col in pred_df.columns if col.endswith("_probability")]
+        probs_array = pred_df[prob_cols].values
+        preds_array = np.argmax(probs_array, axis=1)
+
+        # Convert to tensors
+        predictions = torch.tensor(preds_array, dtype=torch.long)
+        predictions_probs = torch.tensor(probs_array, dtype=torch.float32)
+        real_values = torch.tensor(y_test.values, dtype=torch.long)
+
+        avg_inference_time_ms = ((end_time - start_time) / len(test_df)) * 1000
+        print(f"Batch inference complete. Avg inference time per sample: {avg_inference_time_ms:.4f} ms")
+        return predictions, predictions_probs, real_values, avg_inference_time_ms
+
     def plot_test_metrics_table(test_metrics, figure_version, num_epochs, figure_file_name):
         """
         Plots and saves a table of test metrics as a figure.
@@ -412,13 +459,13 @@ class GenerateTestScores():
         Returns:
         - None (displays the plot)
         """
-        assert len(histories) == 22, "Expected 22 history objects"
-        assert len(model_names) == 18, "Expected 18 model names"
+        assert len(histories) == 23, "Expected 23 history objects"
+        assert len(model_names) == 19, "Expected 19 model names"
 
         # Color palette: c1-c6
         c1, c2, c3, c4, c5, c6, c7 = "crimson","darkorange","gold","limegreen","turquoise","dodgerblue","slateblue"
         c8, c9, c10, c11, c12, c13, c14 = "indigo","orchid","deeppink","saddlebrown","dimgray","black","mediumseagreen"
-        colors = [c1, c2, c3, c4, c5, c6, c7, c8, c9, c1, c2, c3, c4, c5, c6, c8, c9, c10, c11, c12, c13, c14]  # hist1–hist8
+        colors = [c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c1, c2, c3, c4, c5, c6, c7, c9, c10, c11, c12, c13, c14]  # hist1–hist8
 
         fig, axs = plt.subplots(3, 2, figsize=(14, 15))
         axs = axs.flatten()
@@ -442,15 +489,15 @@ class GenerateTestScores():
 
             # Top row: EdgeIIoT (histories 0–2)
             if i in [0, 1]:
-                idxs = range(9)
+                idxs = range(10)
 
             # Bottom row: CIC-IDS2017 (histories 3–5)
             elif i in [4, 5]:
-                idxs = range(9, 18)
+                idxs = range(10, 19)
 
             # Middle row (new): hist7 + hist8
             elif i in [2, 3]:
-                idxs = range(18, 22)  # both histories shown in same subplot
+                idxs = range(19, 23)  # both histories shown in same subplot
 
             handles, labels = [], []
 
@@ -459,13 +506,13 @@ class GenerateTestScores():
                 color = colors[j]
 
                 # Use dataset name for hist7/hist8
-                if j == 18 or j == 20:
-                    if j == 18:
+                if j == 19 or j == 21:
+                    if j == 19:
                         base_label = GenerateTestScores.latex_escape(model_names[5]) + " EdgeIIoT"
                     else:
                         base_label = GenerateTestScores.latex_escape(model_names[8]) + " EdgeIIoT"
-                elif j == 19 or j == 21:
-                    if j == 19:
+                elif j == 20 or j == 22:
+                    if j == 20:
                         base_label = GenerateTestScores.latex_escape(model_names[5]) + " CIC-IDS2017"
                     else:
                         base_label = GenerateTestScores.latex_escape(model_names[8]) + " CIC-IDS2017"
@@ -980,10 +1027,38 @@ class GenerateTestScores():
         return test_set, test_loader, TARGET_LIST, le
     
     def collect_test_results_helper(models_to_score):
+        encoded_data_file_edgeiiot = "./securityBERT/saved_data/encoded_data"
+        encoded_data_file_cicids2017 = "./securityBERT/saved_data/encoded_data_CICIDS2017_0.02samples"
+        raw_data_file_edgeiiot = "./securityBERT/saved_data/raw_data"
+        raw_data_file_cicids2017 = "./securityBERT/saved_data/raw_data_CICIDS2017_0.02samples"
+        encoded_baseline_data_file_edgeiiot = "./securityBERT/saved_data/encoded_baseline_data"
+        encoded_baseline_data_file_cicids2017 = "./securityBERT/saved_data/encoded_baseline_data_CICIDS2017_0.02samples"
+
         test_metrics_list = []
         test_metrics_row_labels = []
         history_list = []
+        previous_dataset_str = ''
         for model_to_score in models_to_score:
+            # Load datasets as-needed to reduce memory requirements
+            if model_to_score[6] == 'edgeiiot_ppfle' and previous_dataset_str != 'edgeiiot_ppfle':
+                previous_dataset_str = 'edgeiiot_ppfle'
+                test_set, test_loader, TARGET_LIST, le = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.PPFLE)
+            elif model_to_score[6] == 'edgeiiot_flat' and previous_dataset_str != 'edgeiiot_flat':
+                previous_dataset_str = 'edgeiiot_flat'
+                test_set, test_loader, TARGET_LIST, le = GenerateTestScores.generate_test_split(pd.read_pickle(f'{raw_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.FLAT)
+            elif model_to_score[6] == 'edgeiiot_int' and previous_dataset_str != 'edgeiiot_int':
+                previous_dataset_str = 'edgeiiot_int'
+                test_set, test_loader, TARGET_LIST, le = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_baseline_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.P_INT)
+            elif model_to_score[6] == 'cicids2017_ppfle' and previous_dataset_str != 'cicids2017_ppfle':
+                previous_dataset_str = 'cicids2017_ppfle'
+                test_set, test_loader, TARGET_LIST, le = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.PPFLE)
+            elif model_to_score[6] == 'cicids2017_flat' and previous_dataset_str != 'cicids2017_flat':
+                previous_dataset_str = 'cicids2017_flat'
+                test_set, test_loader, TARGET_LIST, le = GenerateTestScores.generate_test_split(pd.read_pickle(f'{raw_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.FLAT)
+            elif model_to_score[6] == 'cicids2017_int' and previous_dataset_str != 'cicids2017_int':
+                previous_dataset_str = 'cicids2017_int'
+                test_set, test_loader, TARGET_LIST, le = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_baseline_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.P_INT)
+            
             test_metrics, row_label, history = GenerateTestScores.collect_test_results(
                 model_directory = model_to_score[0],
                 model_version = model_to_score[1],
@@ -991,11 +1066,11 @@ class GenerateTestScores():
                 keep_frac = model_to_score[3],
                 figure_version = model_to_score[4],
                 figure_file_name = model_to_score[5],
-                test_set = model_to_score[6],
-                test_loader = model_to_score[7],
-                TARGET_LIST = model_to_score[8],
-                dataset_type = model_to_score[9],
-                le = model_to_score[10],
+                test_set = test_set,
+                test_loader = test_loader,
+                TARGET_LIST = TARGET_LIST,
+                dataset_type = model_to_score[7],
+                le = le,
             )
             test_metrics_list.append(test_metrics)
             test_metrics_row_labels.append(row_label)
@@ -1005,70 +1080,31 @@ class GenerateTestScores():
 def main():
     os.makedirs(os.path.dirname("./figures/"), exist_ok=True)
 
-    encoded_data_file_edgeiiot = "./securityBERT/saved_data/encoded_data"
-    encoded_data_file_cicids2017 = "./securityBERT/saved_data/encoded_data_CICIDS2017_0.02samples"
-    raw_data_file_edgeiiot = "./securityBERT/saved_data/raw_data"
-    raw_data_file_cicids2017 = "./securityBERT/saved_data/raw_data_CICIDS2017_0.02samples"
-    encoded_baseline_data_file_edgeiiot = "./securityBERT/saved_data/encoded_baseline_data"
-    encoded_baseline_data_file_cicids2017 = "./securityBERT/saved_data/encoded_baseline_data_CICIDS2017_0.02samples"
-    test_set_edgeiiot_ppfle, test_loader_edgeiiot_ppfle, target_list_edgeiiot_ppfle, le_edgeiiot_ppfle = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.PPFLE)
-    test_set_edgeiiot_flat, test_loader_edgeiiot_flat, target_list_edgeiiot_flat, le_edgeiiot_flat = GenerateTestScores.generate_test_split(pd.read_pickle(f'{raw_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.FLAT)
-    X_test_edgeiiot_int, y_test_edgeiiot_int, target_list_edgeiiot_int, le_edgeiiot_int = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_baseline_data_file_edgeiiot}.pck'), DatasetType.EDGEIIOT, ValueType.P_INT)
-
     models_to_score_edgeiiot = [
-        ("securityBERT/baseline_model/", "baseline_DT_PPFLE", 3, 1.0, "DT", 'edgeiiot-ppfle-dt', X_test_edgeiiot_int, y_test_edgeiiot_int, target_list_edgeiiot_int, DatasetType.EDGEIIOT, le_edgeiiot_int),
-        ("securityBERT/baseline_model/", "baseline_RF_PPFLE", 3, 1.0, "RF", 'edgeiiot-ppfle-rf', X_test_edgeiiot_int, y_test_edgeiiot_int, target_list_edgeiiot_int, DatasetType.EDGEIIOT, le_edgeiiot_int),
-        ("securityBERT/baseline_model/", "baseline_KNN_PPFLE", 1, 1.0, "KNN", 'edgeiiot-ppfle-knn', X_test_edgeiiot_int, y_test_edgeiiot_int, target_list_edgeiiot_int, DatasetType.EDGEIIOT, le_edgeiiot_int),
-        ("securityBERT/baseline_model/", "baseline_LSTM_PPFLE", 1, 1.0, "LSTM", 'edgeiiot-ppfle-lstm', X_test_edgeiiot_int, y_test_edgeiiot_int, target_list_edgeiiot_int, DatasetType.EDGEIIOT, le_edgeiiot_int),
-        ("securityBERT/saved_model/", "securityBert3_mod_raw", 3, 1.0, "FLAT-BERT", 'edgeiiot-flat-mod', test_set_edgeiiot_flat, test_loader_edgeiiot_flat, target_list_edgeiiot_flat, DatasetType.EDGEIIOT, le_edgeiiot_flat),
-        ("securityBERT/finetuned_model/", "bertFinetuned_securityBert4_mod_raw_1.0samples", 3, 1.0, "FLAT-BERT-SEM", 'edgeiiot-flat-sem', test_set_edgeiiot_flat, test_loader_edgeiiot_flat, target_list_edgeiiot_flat, DatasetType.EDGEIIOT, le_edgeiiot_flat),
-        ("securityBERT/saved_model/", "securityBert3", 3, 1.0, "PPFLE-BERT (Adjh)", 'edgeiiot-ppfle-orig', test_set_edgeiiot_ppfle, test_loader_edgeiiot_ppfle, target_list_edgeiiot_ppfle, DatasetType.EDGEIIOT, le_edgeiiot_ppfle),
-        ("securityBERT/saved_model/", "securityBert3_mod", 3, 1.0, "PPFLE-BERT (Mine)", 'edgeiiot-ppfle-mod', test_set_edgeiiot_ppfle, test_loader_edgeiiot_ppfle, target_list_edgeiiot_ppfle, DatasetType.EDGEIIOT, le_edgeiiot_ppfle),
-        ("securityBERT/finetuned_model/", "bertFinetuned_securityBert4_mod_1.0samples", 3, 1.0, "PPFLE-BERT-SEM", 'edgeiiot-ppfle-sem', test_set_edgeiiot_ppfle, test_loader_edgeiiot_ppfle, target_list_edgeiiot_ppfle, DatasetType.EDGEIIOT, le_edgeiiot_ppfle),
+        ("securityBERT/baseline_model/", "baseline_DT_PPFLE", 3, 1.0, "DT", 'edgeiiot-ppfle-dt', 'edgeiiot_int', DatasetType.EDGEIIOT),
+        ("securityBERT/baseline_model/", "baseline_RF_PPFLE", 3, 1.0, "RF", 'edgeiiot-ppfle-rf', 'edgeiiot_int', DatasetType.EDGEIIOT),
+        ("securityBERT/baseline_model/", "baseline_KNN_PPFLE", 1, 1.0, "KNN", 'edgeiiot-ppfle-knn', 'edgeiiot_int', DatasetType.EDGEIIOT),
+        ("securityBERT/baseline_model/", "baseline_LSTM_PPFLE", 1, 1.0, "LSTM", 'edgeiiot-ppfle-lstm', 'edgeiiot_int', DatasetType.EDGEIIOT),
+        ("securityBERT/baseline_model/", "baseline_tabTransformer", 3, 1.0, "TabTransformer", 'edgeiiot-ppfle-tabtransformer', 'edgeiiot_int', DatasetType.EDGEIIOT),
+        ("securityBERT/saved_model/", "securityBert3_mod_raw", 3, 1.0, "FLAT-BERT", 'edgeiiot-flat-mod', 'edgeiiot_flat', DatasetType.EDGEIIOT),
+        ("securityBERT/finetuned_model/", "bertFinetuned_securityBert4_mod_raw_1.0samples", 3, 1.0, "FLAT-BERT-SEM", 'edgeiiot-flat-sem', 'edgeiiot_flat', DatasetType.EDGEIIOT),
+        ("securityBERT/saved_model/", "securityBert3", 3, 1.0, "PPFLE-BERT (Adjh)", 'edgeiiot-ppfle-orig', 'edgeiiot_ppfle', DatasetType.EDGEIIOT),
+        ("securityBERT/saved_model/", "securityBert3_mod", 3, 1.0, "PPFLE-BERT (Mine)", 'edgeiiot-ppfle-mod', 'edgeiiot_ppfle', DatasetType.EDGEIIOT),
+        ("securityBERT/finetuned_model/", "bertFinetuned_securityBert4_mod_1.0samples", 3, 1.0, "PPFLE-BERT-SEM", 'edgeiiot-ppfle-sem', 'edgeiiot_ppfle', DatasetType.EDGEIIOT),
     ]
     
     test_metrics_list_edgeiiot, test_metrics_row_labels_edgeiiot, histories = GenerateTestScores.collect_test_results_helper(models_to_score_edgeiiot)
 
-    # List of variables to delete
-    del_vars = [
-        'test_set_edgeiiot_ppfle',
-        'test_loader_edgeiiot_ppfle',
-        'target_list_edgeiiot_ppfle',
-        'le_edgeiiot_ppfle',
-        'test_set_edgeiiot_flat',
-        'test_loader_edgeiiot_flat',
-        'target_list_edgeiiot_flat',
-        'le_edgeiiot_flat',
-        'X_test_edgeiiot_int',
-        'y_test_edgeiiot_int',
-        'target_list_edgeiiot_int',
-        'le_edgeiiot_int',
-    ]
-
-    # Delete variables if they exist
-    for var in del_vars:
-        if var in globals():
-            del globals()[var]
-        elif var in locals():
-            del locals()[var]
-
-    # Force garbage collection
-    gc.collect()
-
-    test_set_cicids2017_ppfle, test_loader_cicids2017_ppfle, target_list_cicids2017_ppfle, le_cicids2017_ppfle = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.PPFLE)
-    test_set_cicids2017_flat, test_loader_cicids2017_flat, target_list_cicids2017_flat, le_cicids2017_flat = GenerateTestScores.generate_test_split(pd.read_pickle(f'{raw_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.FLAT)
-    X_test_cicids2017_int, y_test_cicids2017_int, target_list_cicids2017_int, le_cicids2017_int = GenerateTestScores.generate_test_split(pd.read_pickle(f'{encoded_baseline_data_file_cicids2017}.pck'), DatasetType.CICIDS2017, ValueType.P_INT)
-
     models_to_score_cicids2017 = [
-        ("securityBERT/baseline_model/", "baseline_DT_CICIDS2017_PPFLE", 2, 0.02, "DT 2% Samples", 'cicids2017-ppfle-dt-0.02samples', X_test_cicids2017_int, y_test_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
-        ("securityBERT/baseline_model/", "baseline_RF_CICIDS2017_PPFLE", 3, 0.02, "RF 2% Samples", 'cicids2017-ppfle-rf-0.02samples', X_test_cicids2017_int, y_test_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
-        ("securityBERT/baseline_model/", "baseline_KNN_CICIDS2017_PPFLE", 1, 0.02, "KNN 2% Samples", 'cicids2017-ppfle-knn-0.02samples', X_test_cicids2017_int, y_test_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
-        ("securityBERT/baseline_model/", "baseline_LSTM_CICIDS2017_PPFLE", 3, 0.02, "LSTM 2% Samples", 'cicids2017-ppfle-lstm-0.02samples', X_test_cicids2017_int, y_test_cicids2017_int, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
-        ("securityBERT/saved_model/", "securityBERT3_mod_raw_CICIDS2017_0.02samples", 3, 0.02, "FLAT-BERT 2% Samples", 'cicids2017-flat-0.02samples', test_set_cicids2017_flat, test_loader_cicids2017_flat, target_list_cicids2017_flat, DatasetType.CICIDS2017, le_cicids2017_flat),
-        ("securityBERT/finetuned_model/", "bertFinetuned_securityBERT4_mod_raw_CICIDS2017_0.02samples", 3, 0.02, "FLAT-BERT-SEM 2% Samples", 'cicids2017-flat-sem-0.02samples', test_set_cicids2017_flat, test_loader_cicids2017_flat, target_list_cicids2017_flat, DatasetType.CICIDS2017, le_cicids2017_flat),
-        ("securityBERT/saved_model/", "securityBERT3_mod_CICIDS2017_0.02samples", 3, 0.02, "PPFLE-BERT 2% Samples", 'cicids2017-ppfle-0.02samples', test_set_cicids2017_ppfle, test_loader_cicids2017_ppfle, target_list_cicids2017_ppfle, DatasetType.CICIDS2017, le_cicids2017_ppfle),
-        ("securityBERT/finetuned_model/", "bertFinetuned_securityBERT4_mod_CICIDS2017_0.02samples", 3, 0.02, "PPFLE-BERT-SEM 2% Samples", 'cicids2017-ppfle-sem-0.02samples', test_set_cicids2017_ppfle, test_loader_cicids2017_ppfle, target_list_cicids2017_ppfle, DatasetType.CICIDS2017, le_cicids2017_ppfle),
-        ("languageClass/languageClass/pretrained_model/", "tabTransformer_cicids2017_0.02samples", 3, 0.02, "TabTransformer 2% Samples", 'cicids2017-tabtransformer-0.02samples', test_set_cicids2017_ppfle, test_loader_cicids2017_ppfle, target_list_cicids2017_int, DatasetType.CICIDS2017, le_cicids2017_int),
+        ("securityBERT/baseline_model/", "baseline_DT_CICIDS2017_PPFLE", 2, 0.02, "DT 2% Samples", 'cicids2017-ppfle-dt-0.02samples', 'cicids2017_int', DatasetType.CICIDS2017),
+        ("securityBERT/baseline_model/", "baseline_RF_CICIDS2017_PPFLE", 3, 0.02, "RF 2% Samples", 'cicids2017-ppfle-rf-0.02samples', 'cicids2017_int', DatasetType.CICIDS2017),
+        ("securityBERT/baseline_model/", "baseline_KNN_CICIDS2017_PPFLE", 1, 0.02, "KNN 2% Samples", 'cicids2017-ppfle-knn-0.02samples', 'cicids2017_int', DatasetType.CICIDS2017),
+        ("securityBERT/baseline_model/", "baseline_LSTM_CICIDS2017_PPFLE", 3, 0.02, "LSTM 2% Samples", 'cicids2017-ppfle-lstm-0.02samples', 'cicids2017_int', DatasetType.CICIDS2017),
+        ("securityBERT/baseline_model/", "baseline_tabTransformer_cicids2017_0.02samples", 3, 0.02, "TabTransformer 2% Samples", 'cicids2017-ppfle-tabtransformer-0.02samples', 'cicids2017_int', DatasetType.CICIDS2017),
+        ("securityBERT/saved_model/", "securityBERT3_mod_raw_CICIDS2017_0.02samples", 3, 0.02, "FLAT-BERT 2% Samples", 'cicids2017-flat-0.02samples', 'cicids2017_flat', DatasetType.CICIDS2017),
+        ("securityBERT/finetuned_model/", "bertFinetuned_securityBERT4_mod_raw_CICIDS2017_0.02samples", 3, 0.02, "FLAT-BERT-SEM 2% Samples", 'cicids2017-flat-sem-0.02samples', 'cicids2017_flat', DatasetType.CICIDS2017),
+        ("securityBERT/saved_model/", "securityBERT3_mod_CICIDS2017_0.02samples", 3, 0.02, "PPFLE-BERT 2% Samples", 'cicids2017-ppfle-0.02samples', 'cicids2017_ppfle', DatasetType.CICIDS2017),
+        ("securityBERT/finetuned_model/", "bertFinetuned_securityBERT4_mod_CICIDS2017_0.02samples", 3, 0.02, "PPFLE-BERT-SEM 2% Samples", 'cicids2017-ppfle-sem-0.02samples', 'cicids2017_ppfle', DatasetType.CICIDS2017),
     ]
     test_metrics_list_cicids2017, test_metrics_row_labels_cicids2017, cicids2017_histories = GenerateTestScores.collect_test_results_helper(models_to_score_cicids2017)
     
