@@ -508,14 +508,14 @@ class GenerateTestScores():
                 # Use dataset name for hist7/hist8
                 if j == 19 or j == 21:
                     if j == 19:
-                        base_label = GenerateTestScores.latex_escape(model_names[5]) + " EdgeIIoT"
+                        base_label = GenerateTestScores.latex_escape(model_names[6]) + " EdgeIIoT"
                     else:
-                        base_label = GenerateTestScores.latex_escape(model_names[8]) + " EdgeIIoT"
+                        base_label = GenerateTestScores.latex_escape(model_names[9]) + " EdgeIIoT"
                 elif j == 20 or j == 22:
                     if j == 20:
-                        base_label = GenerateTestScores.latex_escape(model_names[5]) + " CIC-IDS2017"
+                        base_label = GenerateTestScores.latex_escape(model_names[6]) + " CIC-IDS2017"
                     else:
-                        base_label = GenerateTestScores.latex_escape(model_names[8]) + " CIC-IDS2017"
+                        base_label = GenerateTestScores.latex_escape(model_names[9]) + " CIC-IDS2017"
                 else:
                     base_label = GenerateTestScores.latex_escape(model_names[j])
 
