@@ -529,7 +529,6 @@ class GenerateTestScores():
 
                 tr_line, = ax.plot(range(1, 4), tr_vals, '-', color=color, label=f"{base_label} (train)")
                 val_line, = ax.plot(range(1, 4), val_vals, '--', color=color, label=f"{base_label} (val)")
-
                 handles.extend([tr_line, val_line])
                 labels.extend([f"{base_label} (train)", f"{base_label} (val)"])
 
@@ -693,10 +692,15 @@ class GenerateTestScores():
         plt.clf()
         # Affichage du graphique
         
-        y_pred_path = os.path.join(model_directory, f"y_pred_{model_version}.pt")
-        y_proba_path = os.path.join(model_directory, f"y_proba_{model_version}.pt")
-        real_values_path = os.path.join(model_directory, f"real_values_{model_version}.pt")
-        inference_time_path = os.path.join(model_directory, f"inference_time_{model_version}.pt")
+        if model_version == "securityBert3":
+            predictions_name = "original"
+        else:
+            predictions_name = model_version
+
+        y_pred_path = os.path.join(model_directory, f"y_pred_{predictions_name}.pt")
+        y_proba_path = os.path.join(model_directory, f"y_proba_{predictions_name}.pt")
+        real_values_path = os.path.join(model_directory, f"real_values_{predictions_name}.pt")
+        inference_time_path = os.path.join(model_directory, f"inference_time_{predictions_name}.pt")
 
         y_pred = GenerateTestScores.safe_load_tensor(y_pred_path)
         y_proba = GenerateTestScores.safe_load_tensor(y_proba_path)
